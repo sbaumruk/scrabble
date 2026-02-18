@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -34,6 +35,8 @@ func (h *FNV) Val() uint64 {
 // https://en.wikipedia.org/wiki/Scrabble_letter_distributions
 var tilePoints = [255]int{'A': 1, 'B': 4, 'C': 3, 'D': 2, 'E': 1, 'F': 4, 'G': 4, 'H': 3, 'I': 1, 'J': 10, 'K': 6, 'L': 2, 'M': 3, 'N': 1, 'O': 1, 'P': 3, 'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 2, 'V': 6, 'W': 5, 'X': 8, 'Y': 4, 'Z': 10}
 var startTiles = "AAAAAAAAABBCCDDDDEEEEEEEEEEEEFFGGGHHIIIIIIIIIJKLLLLMMNNNNNNOOOOOOOOPPQRRRRRRSSSSTTTTTTUUUUVVWWXYYZ**"
+
+var bingoBonus = 40 // default: NYT Crossplay; Standard Scrabble uses 50
 
 var tw = [225]bool{3: true, 11: true, 45: true, 59: true, 165: true, 179: true, 213: true, 221: true}
 var dw = [225]bool{16: true, 28: true, 52: true, 108: true, 116: true, 172: true, 196: true, 208: true}
@@ -300,6 +303,94 @@ func permute(s []byte) []string {
 		}
 	}
 	return keys
+}
+
+// ── Ruleset loading ───────────────────────────────────────────────────────────
+
+type rulesetDef struct {
+	Name         string         `json:"name"`
+	BingoBonus   int            `json:"bingo_bonus"`
+	LetterPoints map[string]int `json:"letter_points"`
+	TripleWord   [][2]int       `json:"triple_word"`
+	DoubleWord   [][2]int       `json:"double_word"`
+	TripleLetter [][2]int       `json:"triple_letter"`
+	DoubleLetter [][2]int       `json:"double_letter"`
+}
+
+// loadRuleset reads config.json and rulesets.json and applies the selected
+// ruleset to the global board/scoring variables. Returns the active ruleset
+// name. On any error it prints a warning and keeps the compiled-in crossplay
+// defaults unchanged.
+func loadRuleset() string {
+	const defaultName = "NYT Crossplay (default)"
+
+	cfgBytes, err := os.ReadFile("config.json")
+	if err != nil {
+		// No config file — silently use defaults.
+		return defaultName
+	}
+
+	var cfg struct {
+		Ruleset string `json:"ruleset"`
+	}
+	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: config.json is malformed (%v) — using crossplay defaults\n", err)
+		return defaultName
+	}
+
+	rsBytes, err := os.ReadFile("rulesets.json")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: rulesets.json not found — using crossplay defaults\n")
+		return defaultName
+	}
+
+	var rulesets map[string]rulesetDef
+	if err := json.Unmarshal(rsBytes, &rulesets); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: rulesets.json is malformed (%v) — using crossplay defaults\n", err)
+		return defaultName
+	}
+
+	def, ok := rulesets[cfg.Ruleset]
+	if !ok {
+		names := make([]string, 0, len(rulesets))
+		for k := range rulesets {
+			names = append(names, k)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: ruleset %q not found in rulesets.json (available: %s) — using crossplay defaults\n",
+			cfg.Ruleset, strings.Join(names, ", "))
+		return defaultName
+	}
+
+	applyRuleset(def)
+	return def.Name
+}
+
+func applyRuleset(def rulesetDef) {
+	if def.BingoBonus > 0 {
+		bingoBonus = def.BingoBonus
+	}
+	tilePoints = [255]int{}
+	for letter, pts := range def.LetterPoints {
+		if len(letter) == 1 {
+			tilePoints[letter[0]&^32] = pts // uppercase
+		}
+	}
+	tw = [225]bool{}
+	for _, pos := range def.TripleWord {
+		tw[cti(pos[0], pos[1])] = true
+	}
+	dw = [225]bool{}
+	for _, pos := range def.DoubleWord {
+		dw[cti(pos[0], pos[1])] = true
+	}
+	tl = [225]bool{}
+	for _, pos := range def.TripleLetter {
+		tl[cti(pos[0], pos[1])] = true
+	}
+	dl = [225]bool{}
+	for _, pos := range def.DoubleLetter {
+		dl[cti(pos[0], pos[1])] = true
+	}
 }
 
 func (b *Board) PrintBoard() {

@@ -351,7 +351,7 @@ func (b *Board) findTopNMoves(rack []byte, n int) []BestMove {
 						}
 						score := b.scoreMove(x, y, tileset, dir)
 						if rackLen == 7 && len(tileset) == 7 {
-							score += 50
+							score += bingoBonus
 						}
 						// Deduplicate on position + direction + uppercase tiles
 						key := fmt.Sprintf("%d,%d,%d,%s", x, y, int(dir), strings.ToUpper(tileset))
@@ -766,6 +766,8 @@ func runSolve() {
 		os.Exit(0)
 	}()
 
+	ruleset := loadRuleset()
+
 	wordlist, err := loadDictionary("dictionary.txt")
 	if err != nil {
 		fmt.Println("Unable to open dictionary:", err)
@@ -798,7 +800,7 @@ func runSolve() {
 	for _, line := range buildBoardLines(b, nil) {
 		fmt.Println(line)
 	}
-	fmt.Printf("\nBoard: %s\n", boardFile)
+	fmt.Printf("\nBoard: %s | Ruleset: %s\n", boardFile, ruleset)
 	fmt.Print("Whose turn is it first? [M]ine / [O]pponent's: ")
 	firstInput, _ := reader.ReadString('\n')
 	skipMyTurn := strings.HasPrefix(strings.TrimSpace(strings.ToLower(firstInput)), "o")
@@ -852,7 +854,7 @@ func runSolve() {
 			}
 			bonusNote := ""
 			if len(rack) == 7 && len(m.tiles) == 7 {
-				bonusNote = " (includes 50pt bingo bonus)"
+				bonusNote = fmt.Sprintf(" (includes %dpt bingo bonus)", bingoBonus)
 			}
 
 			_, highlight := previewMove(b, m)

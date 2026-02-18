@@ -108,7 +108,7 @@ func (b *Board) DoTurn(player int) {
 						}
 						score := b.scoreMove(x, y, tileset, dir)
 						if startCount == 7 && len(tileset) == 7 {
-							score += 50
+							score += bingoBonus
 						}
 						if score > playPoints {
 							playX = x
@@ -128,7 +128,7 @@ func (b *Board) DoTurn(player int) {
 	}
 	b.play(playX, playY, playTiles, playDir)
 	if startCount == 7 && len(playTiles) == 7 {
-		fmt.Printf("Play %s for %d points (includes 50pt bingo bonus)\n", playTiles, playPoints)
+		fmt.Printf("Play %s for %d points (includes %dpt bingo bonus)\n", playTiles, playPoints, bingoBonus)
 	} else {
 		fmt.Println("Play", playTiles, "for", playPoints, "points")
 	}
@@ -149,6 +149,9 @@ func (b *Board) DoTurn(player int) {
 func runGame() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	rand.Seed(time.Now().Unix())
+
+	ruleset := loadRuleset()
+	fmt.Printf("Ruleset: %s\n", ruleset)
 
 	b := NewBoard("dictionary.txt")
 
