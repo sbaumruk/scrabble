@@ -18,7 +18,7 @@ worse than no docs.
 - Changed how move search works? Update `docs/ALGORITHM.md` §5 and §9.
 - Changed board representation or data structures? Update `docs/ALGORITHM.md` §1–§2.
 - Changed scoring logic? Update `docs/ALGORITHM.md` §7.
-- Added a new file or changed the file layout? Update the Architecture section below
+- Added a new file or changed the file layout? Update the File layout section below
   and any relevant doc files.
 - Added a new concept that isn't covered? Add a new section to the appropriate doc
   (or create a new file in `docs/`).
@@ -48,27 +48,37 @@ An interactive solver mode (`./scrabble solve`) lets a human player get move sug
 ## Build & Run
 
 ```bash
+cd go
 go build -o scrabble .
 ./scrabble        # AI vs AI simulation
 ./scrabble solve  # Interactive solver UI
 ```
 
-Requires `dictionary.txt` (178K words) in the working directory at runtime.
+All Go runtime files live in `go/`. The `boards/` directory is in the repo root and
+symlinked into `go/boards` so the code can reference it as a plain relative path.
+If you clone just the `go/` directory standalone, create a `go/boards/` folder there.
 
-There are no tests, no go.mod, and no external dependencies.
+There are no external Go dependencies.
 
 ## File layout
 
-| File | Purpose |
-|---|---|
-| `main.go` | Entry point; dispatches to `runGame` or `runSolve` |
-| `common.go` | Shared engine: Board struct, trie, scoring, move search (`searchPlay`, `recordMove`, `getPlaySpace`) |
-| `scrabble.go` | AI vs AI game loop (`NewBoard`, `DoTurn`, `runGame`) |
-| `solve.go` | Interactive solver UI, `findTopNMoves`, terminal/board rendering |
-| `dictionary.txt` | 178K-word dictionary (required at runtime) |
-| `rulesets.json` | Ruleset definitions (NYT Crossplay, Standard Scrabble) |
-| `config.json` | Active ruleset selection (optional; defaults to NYT Crossplay) |
-| `docs/` | Detailed documentation (see index above) |
+```
+/
+├── boards/          # Saved board files (shared; symlinked from go/boards)
+├── docs/            # Detailed documentation (see index above)
+├── CLAUDE.md        # This file
+├── README.md        # Project readme
+└── go/              # All Go source and runtime data
+    ├── main.go          # Entry point; dispatches to runGame or runSolve
+    ├── common.go        # Shared engine: Board/Trie, scoring, searchPlay, getPlaySpace
+    ├── scrabble.go      # AI vs AI game loop (NewBoard, DoTurn, runGame)
+    ├── solve.go         # Interactive solver UI, findTopNMoves, terminal rendering
+    ├── go.mod           # Go module file
+    ├── dictionary.txt   # 178K-word dictionary (required at runtime)
+    ├── rulesets.json    # Ruleset definitions (NYT Crossplay, Standard Scrabble)
+    ├── config.json      # Active ruleset selection (optional; defaults to NYT Crossplay)
+    └── boards -> ../boards  # Symlink to root boards/
+```
 
 ## Architecture summary
 
