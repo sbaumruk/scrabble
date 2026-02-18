@@ -48,16 +48,55 @@ type direction int
 var DIR_VERT direction = 0
 var DIR_HORIZ direction = 1
 
+type TrieNode struct {
+	children [26]*TrieNode
+	isEnd    bool
+}
+
 type Board struct {
 	board    [][]byte
 	tiles    []byte
 	wordlist map[uint64]struct{}
+	trie     *TrieNode
 	pscore   [2]int
 	ptiles   [2][]byte
 }
 
 func cti(x, y int) int {
 	return y*15 + x
+}
+
+func buildTrie(filename string) (*TrieNode, error) {
+	root := &TrieNode{}
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	for line, _, err := r.ReadLine(); err == nil; line, _, err = r.ReadLine() {
+		word := strings.TrimRight(string(line), "\r\n")
+		if len(word) < 2 {
+			continue
+		}
+		node := root
+		valid := true
+		for i := 0; i < len(word); i++ {
+			idx := int(word[i]&^32) - int('A')
+			if idx < 0 || idx >= 26 {
+				valid = false
+				break
+			}
+			if node.children[idx] == nil {
+				node.children[idx] = &TrieNode{}
+			}
+			node = node.children[idx]
+		}
+		if valid {
+			node.isEnd = true
+		}
+	}
+	return root, nil
 }
 
 func (b *Board) addWord(word string) {
@@ -207,19 +246,19 @@ func (b *Board) scoreMove(x, y int, tiles string, dir direction) int {
 	return playPoints + b.scoreWord(x, y, dir, plays)
 }
 
-func (b *Board) getPlaySpace(x, y int, dir direction) ([]byte, [][]byte, int) {
-	play := make([]byte, 0)
-	crossPlays := make([][]byte, 0)
-	spaces := 0
+func (b *Board) getPlaySpace(x, y int, dir direction) (startX, startY int, play []byte, crossPlays [][]byte, room int) {
+	play = make([]byte, 0)
+	crossPlays = make([][]byte, 0)
 	if dir == DIR_VERT {
 		for y > 0 && b.board[x][y-1] != 0 {
 			y--
 		}
+		startX, startY = x, y
 		for i := y; i < 15; i++ {
 			play = append(play, b.board[x][i])
 			var crossPlay []byte
 			if b.board[x][i] == 0 {
-				spaces++
+				room++
 				x2, x3 := x, x
 				for x2 > 0 && b.board[x2-1][i] != 0 {
 					x2--
@@ -239,11 +278,12 @@ func (b *Board) getPlaySpace(x, y int, dir direction) ([]byte, [][]byte, int) {
 		for x > 0 && b.board[x-1][y] != 0 {
 			x--
 		}
+		startX, startY = x, y
 		for i := x; i < 15; i++ {
 			play = append(play, b.board[i][y])
 			var crossPlay []byte
 			if b.board[i][y] == 0 {
-				spaces++
+				room++
 				y2, y3 := y, y
 				for y2 > 0 && b.board[i][y2-1] != 0 {
 					y2--
@@ -260,49 +300,98 @@ func (b *Board) getPlaySpace(x, y int, dir direction) ([]byte, [][]byte, int) {
 			crossPlays = append(crossPlays, crossPlay)
 		}
 	}
-	return play, crossPlays, spaces
+	return
 }
 
-// expandWildcards recursively replaces each '*' with every letter a-z.
-func expandWildcards(key string) []string {
-	wi := strings.Index(key, "*")
-	if wi == -1 {
-		return []string{key}
+func (b *Board) recordMove(placed []byte, anchorX, anchorY int, dir direction,
+	rackLen int, seen map[string]bool, moves *[]BestMove) {
+	if !b.checkCenterPlayed(anchorX, anchorY, len(placed), dir) {
+		return
 	}
-	var results []string
-	for c := byte('a'); c <= 'z'; c++ {
-		results = append(results, expandWildcards(key[:wi]+string(c)+key[wi+1:])...)
+	if !b.checkContiguous(anchorX, anchorY, len(placed), dir) {
+		return
 	}
-	return results
+	score := b.scoreMove(anchorX, anchorY, string(placed), dir)
+	if rackLen == 7 && len(placed) == 7 {
+		score += bingoBonus
+	}
+	key := fmt.Sprintf("%d,%d,%d,%s", anchorX, anchorY, int(dir), strings.ToUpper(string(placed)))
+	if !seen[key] {
+		seen[key] = true
+		*moves = append(*moves, BestMove{x: anchorX, y: anchorY, dir: dir, tiles: string(placed), score: score})
+	}
 }
 
-func permute(s []byte) []string {
-	var _permute func(s []byte, d int, result []string) []string
-	_permute = func(s []byte, d int, result []string) []string {
-		if d == len(s) {
-			result = append(result, string(s))
-		} else {
-			for i := d; i < len(s); i++ {
-				s[d], s[i] = s[i], s[d]
-				result = _permute(s, d+1, result)
-				s[d], s[i] = s[i], s[d]
+func (b *Board) searchPlay(node *TrieNode, play []byte, crossPlays [][]byte,
+	playIdx int, rack []byte, placed []byte,
+	anchorX, anchorY int, dir direction,
+	rackLen int, seen map[string]bool, moves *[]BestMove) {
+	// Can we record a word here? Only if the next position is not an existing tile we must include.
+	canStop := playIdx >= len(play) || play[playIdx] == 0
+	if canStop && node.isEnd && len(placed) > 0 {
+		b.recordMove(placed, anchorX, anchorY, dir, rackLen, seen, moves)
+	}
+	if playIdx >= len(play) || len(rack) == 0 {
+		return
+	}
+
+	curr := play[playIdx]
+	if curr != 0 {
+		// Existing tile on board: must follow this trie edge.
+		idx := int(curr&^32) - int('A')
+		if idx >= 0 && idx < 26 && node.children[idx] != nil {
+			b.searchPlay(node.children[idx], play, crossPlays, playIdx+1, rack, placed,
+				anchorX, anchorY, dir, rackLen, seen, moves)
+		}
+		return
+	}
+
+	// Empty slot: try placing each rack tile here.
+	var tried [26]bool
+	for rackIdx := 0; rackIdx < len(rack); rackIdx++ {
+		t := rack[rackIdx]
+		isWild := t == '*'
+		for letter := byte('A'); letter <= 'Z'; letter++ {
+			if !isWild && (t&^32) != letter {
+				continue
 			}
+			if tried[letter-'A'] {
+				continue
+			}
+			child := node.children[letter-'A']
+			if child == nil {
+				continue
+			}
+			// Cross-word check via FNV wordlist.
+			if crossPlays[playIdx] != nil {
+				f2 := NewFNV()
+				for _, v := range crossPlays[playIdx] {
+					if v == 0 {
+						f2.Add(letter)
+					} else {
+						f2.Add(v)
+					}
+				}
+				if _, ok := b.wordlist[f2.Val()]; !ok {
+					continue
+				}
+			}
+			tried[letter-'A'] = true
+			stored := letter
+			if isWild {
+				stored = letter + 32 // lowercase = blank tile on board
+			}
+			// Remove tile from rack (swap to end, shrink).
+			rack[rackIdx], rack[len(rack)-1] = rack[len(rack)-1], rack[rackIdx]
+			rack = rack[:len(rack)-1]
+			placed = append(placed, stored)
+			b.searchPlay(child, play, crossPlays, playIdx+1, rack, placed,
+				anchorX, anchorY, dir, rackLen, seen, moves)
+			placed = placed[:len(placed)-1]
+			rack = rack[:len(rack)+1]
+			rack[rackIdx], rack[len(rack)-1] = rack[len(rack)-1], rack[rackIdx]
 		}
-		return result
 	}
-	subsets := make(map[string]struct{})
-	for _, perm := range _permute(s, 0, nil) {
-		for i := 1; i <= len(s); i++ {
-			subsets[perm[:i]] = struct{}{}
-		}
-	}
-	keys := make([]string, 0, len(subsets))
-	for key := range subsets {
-		if len(key) > 0 {
-			keys = append(keys, expandWildcards(key)...)
-		}
-	}
-	return keys
 }
 
 // ── Ruleset loading ───────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
 scrabble
 solve
-boards/*.txt
+boards/**/*
 .claude/

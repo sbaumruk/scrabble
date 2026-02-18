@@ -298,8 +298,9 @@ type BestMove struct {
 func (b *Board) findTopNMoves(rack []byte, n int) []BestMove {
 	var moves []BestMove
 	seen := make(map[string]bool)
-	tilesets := permute(rack)
 	rackLen := len(rack)
+	rackCopy := make([]byte, rackLen)
+	copy(rackCopy, rack)
 
 	for x := 0; x < 15; x++ {
 		for y := 0; y < 15; y++ {
@@ -307,60 +308,32 @@ func (b *Board) findTopNMoves(rack []byte, n int) []BestMove {
 				continue
 			}
 			for _, dir := range []direction{DIR_HORIZ, DIR_VERT} {
-				play, crossPlays, room := b.getPlaySpace(x, y, dir)
-				if room > rackLen {
-					room = rackLen
+				startX, startY, play, crossPlays, room := b.getPlaySpace(x, y, dir)
+				if room == 0 {
+					continue
 				}
-				for tilecount := 1; tilecount <= room; tilecount++ {
-					if !b.checkCenterPlayed(x, y, tilecount, dir) || !b.checkContiguous(x, y, tilecount, dir) {
-						continue
-					}
-				TILESETLIST:
-					for _, tileset := range tilesets {
-						if len(tileset) != tilecount {
-							continue
-						}
-						f := NewFNV()
-						j := 0
-						for i, v := range play {
-							if v == 0 {
-								if j == len(tileset) {
-									break
-								}
-								f.Add(tileset[j])
-								if crossPlays[i] != nil {
-									f2 := NewFNV()
-									for _, v2 := range crossPlays[i] {
-										if v2 == 0 {
-											f2.Add(tileset[j])
-										} else {
-											f2.Add(v2)
-										}
-									}
-									if _, ok := b.wordlist[f2.Val()]; !ok {
-										continue TILESETLIST
-									}
-								}
-								j++
-							} else {
-								f.Add(v)
-							}
-						}
-						if _, ok := b.wordlist[f.Val()]; !ok {
-							continue TILESETLIST
-						}
-						score := b.scoreMove(x, y, tileset, dir)
-						if rackLen == 7 && len(tileset) == 7 {
-							score += bingoBonus
-						}
-						// Deduplicate on position + direction + uppercase tiles
-						key := fmt.Sprintf("%d,%d,%d,%s", x, y, int(dir), strings.ToUpper(tileset))
-						if !seen[key] {
-							seen[key] = true
-							moves = append(moves, BestMove{x: x, y: y, dir: dir, tiles: tileset, score: score})
-						}
-					}
+				var offset int
+				if dir == DIR_HORIZ {
+					offset = x - startX
+				} else {
+					offset = y - startY
 				}
+				// Pre-walk trie through existing tiles before the anchor.
+				node := b.trie
+				valid := true
+				for i := 0; i < offset; i++ {
+					idx := int(play[i]&^32) - int('A')
+					if idx < 0 || idx >= 26 || node.children[idx] == nil {
+						valid = false
+						break
+					}
+					node = node.children[idx]
+				}
+				if !valid {
+					continue
+				}
+				b.searchPlay(node, play, crossPlays, offset, rackCopy,
+					make([]byte, 0, 7), x, y, dir, rackLen, seen, &moves)
 			}
 		}
 	}
@@ -793,7 +766,12 @@ func runSolve() {
 		fmt.Println("Failed to load board:", err)
 		return
 	}
-	b := &Board{board: boardData, wordlist: wordlist}
+	trie, err := buildTrie("dictionary.txt")
+	if err != nil {
+		fmt.Println("Unable to build trie:", err)
+		return
+	}
+	b := &Board{board: boardData, wordlist: wordlist, trie: trie}
 
 	// Ask whose turn is first
 	fmt.Print("\x1b[2J\x1b[H")

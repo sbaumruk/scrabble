@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"runtime"
+	"sort"
 	"time"
 )
 
@@ -24,6 +25,11 @@ func NewBoard(dict string) *Board {
 	board.wordlist, err = loadDictionary(dict)
 	if err != nil {
 		fmt.Println("Unable to open dictionary", err)
+		return nil
+	}
+	board.trie, err = buildTrie(dict)
+	if err != nil {
+		fmt.Println("Unable to build trie", err)
 		return nil
 	}
 	board.ptiles[0], board.tiles = board.tiles[:7], board.tiles[7:]
@@ -53,86 +59,61 @@ func (b *Board) play(x, y int, word string, dir direction) {
 
 func (b *Board) DoTurn(player int) {
 	startCount := len(b.ptiles[player])
-	var playX, playY, playPoints int
-	var playTiles string
-	var playDir direction
-	tilesets := permute(b.ptiles[player])
+	var moves []BestMove
+	seen := make(map[string]bool)
+	rack := make([]byte, startCount)
+	copy(rack, b.ptiles[player])
+	rackLen := startCount
 
-	for _, x := range rand.Perm(15) {
-		for _, y := range rand.Perm(15) {
+	for x := 0; x < 15; x++ {
+		for y := 0; y < 15; y++ {
 			if b.board[x][y] != 0 {
 				continue
 			}
 			for _, dir := range []direction{DIR_HORIZ, DIR_VERT} {
-				play, crossPlays, room := b.getPlaySpace(x, y, dir)
-				if room > len(b.ptiles[player]) {
-					room = len(b.ptiles[player])
+				startX, startY, play, crossPlays, room := b.getPlaySpace(x, y, dir)
+				if room == 0 {
+					continue
 				}
-				for tilecount := 1; tilecount <= room; tilecount++ {
-					if !b.checkCenterPlayed(x, y, tilecount, dir) || !b.checkContiguous(x, y, tilecount, dir) {
-						continue
-					}
-				TILESETLIST:
-					for _, tileset := range tilesets {
-						if len(tileset) != tilecount {
-							continue
-						}
-						f := NewFNV()
-						j := 0
-						for i, v := range play {
-							if v == 0 {
-								if j == len(tileset) {
-									break
-								}
-								f.Add(tileset[j])
-								if crossPlays[i] != nil {
-									f2 := NewFNV()
-									for _, v := range crossPlays[i] {
-										if v == 0 {
-											f2.Add(tileset[j])
-										} else {
-											f2.Add(v)
-										}
-									}
-									if _, ok := b.wordlist[f2.Val()]; !ok {
-										continue TILESETLIST
-									}
-								}
-								j++
-							} else {
-								f.Add(v)
-							}
-						}
-						if _, ok := b.wordlist[f.Val()]; !ok {
-							continue TILESETLIST
-						}
-						score := b.scoreMove(x, y, tileset, dir)
-						if startCount == 7 && len(tileset) == 7 {
-							score += bingoBonus
-						}
-						if score > playPoints {
-							playX = x
-							playY = y
-							playTiles = tileset
-							playPoints = score
-							playDir = dir
-						}
-					}
+				var offset int
+				if dir == DIR_HORIZ {
+					offset = x - startX
+				} else {
+					offset = y - startY
 				}
+				node := b.trie
+				valid := true
+				for i := 0; i < offset; i++ {
+					idx := int(play[i]&^32) - int('A')
+					if idx < 0 || idx >= 26 || node.children[idx] == nil {
+						valid = false
+						break
+					}
+					node = node.children[idx]
+				}
+				if !valid {
+					continue
+				}
+				b.searchPlay(node, play, crossPlays, offset, rack,
+					make([]byte, 0, 7), x, y, dir, rackLen, seen, &moves)
 			}
 		}
 	}
-	if playTiles == "" {
+
+	if len(moves) == 0 {
 		fmt.Println("NO WORD FOUND - PASSING")
 		return
 	}
-	b.play(playX, playY, playTiles, playDir)
-	if startCount == 7 && len(playTiles) == 7 {
-		fmt.Printf("Play %s for %d points (includes %dpt bingo bonus)\n", playTiles, playPoints, bingoBonus)
+	sort.Slice(moves, func(i, j int) bool { return moves[i].score > moves[j].score })
+	m := moves[0]
+
+	b.play(m.x, m.y, m.tiles, m.dir)
+	if startCount == 7 && len(m.tiles) == 7 {
+		fmt.Printf("Play %s for %d points (includes %dpt bingo bonus)\n", m.tiles, m.score, bingoBonus)
 	} else {
-		fmt.Println("Play", playTiles, "for", playPoints, "points")
+		fmt.Println("Play", m.tiles, "for", m.score, "points")
 	}
-	for _, c := range playTiles {
+	for _, c := range m.tiles {
 		if c >= 'a' && c <= 'z' {
 			c = '*'
 		}
@@ -143,7 +124,7 @@ func (b *Board) DoTurn(player int) {
 		b.ptiles[player] = append(b.ptiles[player], b.tiles[0])
 		b.tiles = b.tiles[1:]
 	}
-	b.pscore[player] += playPoints
+	b.pscore[player] += m.score
 }
 
 func runGame() {
