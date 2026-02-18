@@ -423,7 +423,7 @@ func (b *Board) findOpponentPlacements(word string) []BestMove {
 						bx, by = startX, startY+i
 					}
 					if b.board[bx][by] != 0 {
-						if b.board[bx][by] != word[i] {
+						if b.board[bx][by]&^32 != word[i] { // uppercase board tile to handle blanks (stored lowercase)
 							valid = false
 							break
 						}
