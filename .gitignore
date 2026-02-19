@@ -2,3 +2,5 @@ scrabble
 solve
 boards/**/*
 .claude/
+go/static/
+!go/static/.gitkeep

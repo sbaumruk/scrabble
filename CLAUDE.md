@@ -44,6 +44,8 @@ A two-player Scrabble AI simulation written in pure Go with no external dependen
 Two AI players play against each other using a greedy strategy (always picks the
 highest-scoring valid move). Console-only output with ANSI-colored board display.
 An interactive solver mode (`./scrabble solve`) lets a human player get move suggestions.
+A web UI mode (`./scrabble serve`) starts an HTTP server with a SvelteKit frontend
+for the same solver workflow in the browser.
 
 ## Build & Run
 
@@ -52,6 +54,7 @@ cd go
 go build -o scrabble .
 ./scrabble        # AI vs AI simulation
 ./scrabble solve  # Interactive solver UI
+./scrabble serve  # Web UI on http://localhost:8080
 ```
 
 All Go runtime files live in `go/`. The `boards/` directory is in the repo root and
@@ -59,6 +62,25 @@ symlinked into `go/boards` so the code can reference it as a plain relative path
 If you clone just the `go/` directory standalone, create a `go/boards/` folder there.
 
 There are no external Go dependencies.
+
+### Web UI development
+
+The SvelteKit frontend lives in `web/`. During development, run the Go API and
+Vite dev server in two terminals:
+
+```bash
+cd go && go run . serve          # API on :8080
+cd web && npm run dev            # Vite on :5173 (proxies /api → :8080)
+```
+
+Production build (single binary with embedded frontend):
+
+```bash
+cd web && npm run build
+rm -rf ../go/static && cp -r build ../go/static
+cd ../go && go build -o scrabble .
+./scrabble serve
+```
 
 ## File layout
 
@@ -68,16 +90,39 @@ There are no external Go dependencies.
 ├── docs/            # Detailed documentation (see index above)
 ├── CLAUDE.md        # This file
 ├── README.md        # Project readme
-└── go/              # All Go source and runtime data
-    ├── main.go          # Entry point; dispatches to runGame or runSolve
-    ├── common.go        # Shared engine: Board/Trie, scoring, searchPlay, getPlaySpace
-    ├── scrabble.go      # AI vs AI game loop (NewBoard, DoTurn, runGame)
-    ├── solve.go         # Interactive solver UI, findTopNMoves, terminal rendering
-    ├── go.mod           # Go module file
-    ├── dictionary.txt   # 178K-word dictionary (required at runtime)
-    ├── rulesets.json    # Ruleset definitions (NYT Crossplay, Standard Scrabble)
-    ├── config.json      # Active ruleset selection (optional; defaults to NYT Crossplay)
-    └── boards -> ../boards  # Symlink to root boards/
+├── go/              # All Go source and runtime data
+│   ├── main.go          # Entry point; dispatches to runGame, runSolve, or runServer
+│   ├── common.go        # Shared engine: Board/Trie, scoring, searchPlay, getPlaySpace
+│   ├── scrabble.go      # AI vs AI game loop (NewBoard, DoTurn, runGame)
+│   ├── solve.go         # Interactive solver UI, findTopNMoves, terminal rendering
+│   ├── server.go        # HTTP server, JSON API handlers, static file serving
+│   ├── go.mod           # Go module file
+│   ├── dictionary.txt   # 178K-word dictionary (required at runtime)
+│   ├── rulesets.json    # Ruleset definitions (NYT Crossplay, Standard Scrabble)
+│   ├── config.json      # Active ruleset selection (optional; defaults to NYT Crossplay)
+│   ├── static/          # Embedded SvelteKit build (populated by web build)
+│   └── boards -> ../boards  # Symlink to root boards/
+└── web/             # SvelteKit frontend (TypeScript + Svelte 5)
+    ├── svelte.config.js     # adapter-static, SPA fallback
+    ├── vite.config.ts       # Vite config with /api proxy for dev
+    ├── package.json
+    ├── src/
+    │   ├── app.html
+    │   ├── app.css          # CSS custom properties, light/dark themes
+    │   ├── lib/
+    │   │   ├── types.ts     # Move, Ruleset interfaces
+    │   │   ├── api.ts       # Fetch wrappers for all API endpoints
+    │   │   └── components/
+    │   │       ├── Board.svelte      # 15×15 CSS grid board
+    │   │       ├── MoveList.svelte   # Scrollable move list with selection
+    │   │       └── RackInput.svelte  # Tile input with visual slots
+    │   └── routes/
+    │       ├── +layout.svelte  # App shell: header, dark mode toggle
+    │       ├── +layout.ts      # SSR disabled
+    │       ├── +page.svelte    # Board picker (home screen)
+    │       └── game/
+    │           └── +page.svelte  # Main game view (solve + opponent)
+    └── build/               # Production build output (gitignored)
 ```
 
 ## Architecture summary

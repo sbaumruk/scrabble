@@ -1,0 +1,11 @@
+services:
+  scrabble:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - boards:/app/boards
+    restart: unless-stopped
+
+volumes:
+  boards:

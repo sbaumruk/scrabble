@@ -273,7 +273,56 @@ impossible.
 
 ---
 
-## 10. JavaScript port checklist
+## 10. Web architecture (current)
+
+The project now ships a **SvelteKit web frontend** backed by the Go engine via HTTP API.
+The engine (trie, dictionary, scoring) runs server-side; the browser is a thin UI.
+
+### How it works
+
+- `./scrabble serve` starts an HTTP server on `:8080`.
+- At startup the server loads the dictionary + trie **once** and shares them (read-only)
+  across all requests.
+- The API is **stateless**: every `/api/solve` and `/api/opponent` request sends the full
+  15×15 board as 15 strings (`.` = empty, letters = tiles). The server constructs a
+  throwaway `Board` struct using the shared wordlist + trie singletons.
+- Board files in `boards/*.txt` provide persistence (same format as the CLI solver).
+- The SvelteKit app builds to static files (`adapter-static`), embedded into the Go
+  binary via `//go:embed static/*` and served with SPA fallback.
+
+### API endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`  | `/api/boards` | List saved boards |
+| `GET`  | `/api/boards/{name}` | Load a board |
+| `POST` | `/api/boards/{name}` | Save a board |
+| `POST` | `/api/boards` | Create a new blank board |
+| `POST` | `/api/solve` | Find top moves for a rack + board |
+| `POST` | `/api/opponent` | Find placements for opponent's word |
+| `GET`  | `/api/ruleset` | Get active ruleset (multiplier positions, letter points) |
+
+### Move JSON shape
+
+```json
+{
+  "x": 3, "y": 7, "dir": "H",
+  "tiles": "HeLLO",
+  "word": "HELLO",
+  "score": 42,
+  "newPositions": [[3,7],[4,7],[5,7],[6,7],[7,7]]
+}
+```
+
+- `tiles` = only new tiles placed (lowercase = blank used as that letter)
+- `word` = full word including existing board tiles
+- `newPositions` = cells to highlight in the board preview
+
+---
+
+## 11. Pure-JS port checklist (future)
+
+If the engine is ever ported to run fully client-side:
 
 - [ ] `board`: `Uint8Array(225)`, column-major (`board[x*15+y]` or use `cti(x,y) = y*15+x`)
       Actually keep `board[x][y]` as a 2D array for clarity, or use `board[cti(x,y)]`.
@@ -287,5 +336,5 @@ impossible.
 - [ ] `getPlaySpace` returns the same 5 values; cross-word context arrays work the same.
 - [ ] `searchPlay` is naturally expressed as a recursive function; JS engines handle
       recursion depth up to ~7 tiles × 15 board positions without issue.
-- [ ] For the webapp, run the search in a **Web Worker** so the UI thread stays
+- [ ] For a pure-client webapp, run the search in a **Web Worker** so the UI thread stays
       responsive. Post the rack + board state to the worker, get back the move list.
