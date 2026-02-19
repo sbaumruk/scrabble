@@ -6,3 +6,11 @@ services:
     volumes:
       - /Users/jarvis/docker/scrabble/boards:/app/boards
     restart: unless-stopped
+    networks:
+      - default
+      - jarvis
+
+networks:
+  jarvis:
+    external: true
+    name: jarvis_default
