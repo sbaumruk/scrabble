@@ -1,13 +1,13 @@
 services:
   scrabble:
     build: .
+    container_name: scrabble
     ports:
       - "8031:8080"
     volumes:
       - /Users/jarvis/docker/scrabble/boards:/app/boards
     restart: unless-stopped
     networks:
-      - default
       - jarvis
 
 networks:
