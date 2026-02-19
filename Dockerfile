@@ -7,12 +7,12 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 2: Build Go binary with embedded frontend
-FROM golang:1.25-alpine AS backend
+FROM golang:alpine AS backend
 WORKDIR /app/go
 COPY go/go.mod ./
 COPY go/*.go ./
 COPY go/dictionary.txt go/rulesets.json ./
-COPY go/config.json ./
+COPY go/config.json* ./
 COPY --from=frontend /app/web/build ./static/
 RUN go build -o scrabble .
 
@@ -23,7 +23,7 @@ WORKDIR /app
 COPY --from=backend /app/go/scrabble .
 COPY --from=backend /app/go/dictionary.txt .
 COPY --from=backend /app/go/rulesets.json .
-COPY --from=backend /app/go/config.json .
+COPY --from=backend /app/go/config.json* ./
 RUN mkdir -p boards
 EXPOSE 8080
 CMD ["./scrabble", "serve"]
