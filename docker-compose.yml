@@ -2,7 +2,7 @@ services:
   scrabble:
     build: .
     ports:
-      - "8080:8080"
+      - "8031:8080"
     volumes:
       - /Users/jarvis/docker/scrabble/boards:/app/boards
     restart: unless-stopped
