@@ -1,8 +1,17 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 	import { initAuth, login, logout, onAuthChange } from '$lib/auth';
 	import type { User } from 'oidc-client-ts';
+
+	// Track SPA page views in Matomo
+	afterNavigate(() => {
+		if (typeof window !== 'undefined' && window._paq) {
+			window._paq.push(['setCustomUrl', window.location.href]);
+			window._paq.push(['trackPageView']);
+		}
+	});
 
 	let { children } = $props();
 
