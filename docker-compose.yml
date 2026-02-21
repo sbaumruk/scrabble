@@ -22,6 +22,8 @@ services:
       - "8031:8080"
     environment:
       - DATABASE_URL=postgres://scrabble:scrabblepass@scrabble_postgres:5432/scrabble?sslmode=disable
+      - OIDC_ISSUER_URL=https://auth.spencerbaumruk.com/realms/master
+      - OIDC_CLIENT_ID=scrabble
     depends_on:
       postgres:
         condition: service_healthy

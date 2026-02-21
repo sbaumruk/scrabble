@@ -197,9 +197,14 @@ func handleCreateBoardFile(w http.ResponseWriter, r *http.Request) {
 
 // ── Database-backed board handlers ───────────────────────────────────────────
 
-func handleListBoardsDB(db *DB) http.HandlerFunc {
+func handleListBoardsDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := getUserIDFromContext(r.Context())
+		// When auth is active but user is not authenticated, return empty list
+		if av != nil && userID == "" {
+			writeJSON(w, 200, map[string]interface{}{"boards": []BoardMeta{}})
+			return
+		}
 		boards, err := db.ListBoards(r.Context(), userID)
 		if err != nil {
 			writeError(w, 500, "failed to list boards")
@@ -209,7 +214,7 @@ func handleListBoardsDB(db *DB) http.HandlerFunc {
 	}
 }
 
-func handleGetBoardDB(db *DB) http.HandlerFunc {
+func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/boards/")
 		if id == "" {
@@ -217,17 +222,17 @@ func handleGetBoardDB(db *DB) http.HandlerFunc {
 			return
 		}
 
-		// Route: /api/boards/shared/{token}
+		// Route: /api/boards/shared/{token} — public, no auth required
 		if strings.HasPrefix(id, "shared/") {
 			token := strings.TrimPrefix(id, "shared/")
 			handleGetSharedBoardDB(db, token, w, r)
 			return
 		}
 
-		// Route: /api/boards/{id}/share
+		// Route: /api/boards/{id}/share — requires auth
 		if strings.HasSuffix(id, "/share") {
 			id = strings.TrimSuffix(id, "/share")
-			handleShareBoardDB(db, id, w, r)
+			handleShareBoardDB(db, av, id, w, r)
 			return
 		}
 
@@ -243,6 +248,10 @@ func handleGetBoardDB(db *DB) http.HandlerFunc {
 			writeJSON(w, 200, board)
 
 		case http.MethodPost:
+			if av != nil && userID == "" {
+				writeError(w, 401, "authentication required")
+				return
+			}
 			var req struct {
 				Board []string `json:"board"`
 			}
@@ -261,6 +270,10 @@ func handleGetBoardDB(db *DB) http.HandlerFunc {
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		case http.MethodDelete:
+			if av != nil && userID == "" {
+				writeError(w, 401, "authentication required")
+				return
+			}
 			if err := db.DeleteBoard(r.Context(), id, userID); err != nil {
 				writeError(w, 404, "board not found")
 				return
@@ -273,8 +286,14 @@ func handleGetBoardDB(db *DB) http.HandlerFunc {
 	}
 }
 
-func handleCreateBoardDB(db *DB) http.HandlerFunc {
+func handleCreateBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		userID := getUserIDFromContext(r.Context())
+		if av != nil && userID == "" {
+			writeError(w, 401, "authentication required")
+			return
+		}
+
 		var req struct {
 			Name string `json:"name"`
 		}
@@ -288,7 +307,6 @@ func handleCreateBoardDB(db *DB) http.HandlerFunc {
 			return
 		}
 
-		userID := getUserIDFromContext(r.Context())
 		id, err := db.CreateBoard(r.Context(), req.Name, userID)
 		if err != nil {
 			writeError(w, 500, "failed to create board")
@@ -315,13 +333,17 @@ func handleGetSharedBoardDB(db *DB, token string, w http.ResponseWriter, r *http
 	})
 }
 
-func handleShareBoardDB(db *DB, id string, w http.ResponseWriter, r *http.Request) {
+func handleShareBoardDB(db *DB, av *AuthVerifier, id string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "method not allowed")
 		return
 	}
 
 	userID := getUserIDFromContext(r.Context())
+	if av != nil && userID == "" {
+		writeError(w, 401, "authentication required")
+		return
+	}
 
 	// Check if share token already exists
 	existing, err := db.GetShareToken(r.Context(), id, userID)
@@ -453,14 +475,15 @@ func handleRuleset(rulesetName string) http.HandlerFunc {
 	}
 }
 
-// ── Auth context helpers (stub for Phase 1, real implementation in Phase 2) ──
+// ── Auth context keys and helpers ────────────────────────────────────────────
 
 type contextKey string
 
 const userIDContextKey contextKey = "userID"
+const userClaimsContextKey contextKey = "userClaims"
 
 // getUserIDFromContext extracts the authenticated user's ID from the request
-// context. Returns "" if no user is authenticated (Phase 1: always "").
+// context. Returns "" if no user is authenticated.
 func getUserIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(userIDContextKey).(string); ok {
 		return v
@@ -511,25 +534,46 @@ func runServer() {
 		}
 	}
 
+	// OIDC authentication (optional — anonymous mode if not configured)
+	var av *AuthVerifier
+	if issuer := os.Getenv("OIDC_ISSUER_URL"); issuer != "" {
+		clientID := os.Getenv("OIDC_CLIENT_ID")
+		if clientID == "" {
+			fmt.Println("OIDC_CLIENT_ID is required when OIDC_ISSUER_URL is set")
+			os.Exit(1)
+		}
+		fmt.Println("Initializing OIDC authentication...")
+		av, err = NewAuthVerifier(context.Background(), AuthConfig{
+			IssuerURL: issuer,
+			ClientID:  clientID,
+		})
+		if err != nil {
+			fmt.Println("Failed to initialize OIDC:", err)
+			os.Exit(1)
+		}
+		fmt.Println("OIDC authentication enabled.")
+	}
+
 	mux := http.NewServeMux()
 
-	// Stateless computation routes (always public, no DB needed)
+	// Stateless computation routes (always public, no auth needed)
 	mux.HandleFunc("/api/solve", handleSolve(wordlist, trie))
 	mux.HandleFunc("/api/opponent", handleOpponent(wordlist, trie))
 	mux.HandleFunc("/api/ruleset", handleRuleset(rulesetName))
+	mux.HandleFunc("/api/me", handleMe())
 
 	// Board CRUD routes — DB or file-based
 	if db != nil {
 		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				handleListBoardsDB(db)(w, r)
+				handleListBoardsDB(db, av)(w, r)
 			} else if r.Method == http.MethodPost {
-				handleCreateBoardDB(db)(w, r)
+				handleCreateBoardDB(db, av)(w, r)
 			} else {
 				writeError(w, 405, "method not allowed")
 			}
 		})
-		mux.HandleFunc("/api/boards/", handleGetBoardDB(db))
+		mux.HandleFunc("/api/boards/", handleGetBoardDB(db, av))
 	} else {
 		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
@@ -587,7 +631,7 @@ func runServer() {
 		port = p
 	}
 
-	// CORS wrapper for dev mode (Vite on :5173 → API on :8080)
+	// CORS wrapper + auth extraction for API routes
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -596,6 +640,10 @@ func runServer() {
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(204)
 				return
+			}
+			// Extract auth token into request context
+			if av != nil {
+				r = extractAuth(av, r)
 			}
 		}
 		mux.ServeHTTP(w, r)
@@ -606,6 +654,11 @@ func runServer() {
 		fmt.Println("  Board storage: PostgreSQL")
 	} else {
 		fmt.Println("  Board storage: file-based (boards/)")
+	}
+	if av != nil {
+		fmt.Println("  Authentication: OIDC")
+	} else {
+		fmt.Println("  Authentication: disabled (anonymous)")
 	}
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		fmt.Println("Server error:", err)
