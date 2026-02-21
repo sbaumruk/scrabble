@@ -14,7 +14,7 @@ const userManager = new UserManager({
 	post_logout_redirect_uri: postLogoutUri,
 	response_type: 'code',
 	scope: 'openid profile email',
-	automaticSilentRenew: true,
+	automaticSilentRenew: false,
 	userStore: new WebStorageStateStore({ store: localStorage })
 });
 
@@ -57,18 +57,38 @@ export async function handleCallback(): Promise<User> {
 	return user;
 }
 
-/** Get the current access token, or null if not logged in. */
+/** Get the current access token, or null if not logged in.
+ *  If the token is expired, attempts a single silent renewal. */
 export async function getAccessToken(): Promise<string | null> {
-	const user = await userManager.getUser();
-	if (!user || user.expired) return null;
-	return user.access_token;
+	let user = await userManager.getUser();
+	if (!user) return null;
+	if (user.expired) {
+		try {
+			user = await userManager.signinSilent();
+			if (user) notify(user);
+		} catch {
+			notify(null);
+			return null;
+		}
+	}
+	return user?.access_token ?? null;
 }
 
-/** Get the current user, or null if not logged in. */
+/** Get the current user, or null if not logged in.
+ *  If the token is expired, attempts a single silent renewal. */
 export async function getUser(): Promise<User | null> {
-	const user = await userManager.getUser();
-	if (!user || user.expired) return null;
-	return user;
+	let user = await userManager.getUser();
+	if (!user) return null;
+	if (user.expired) {
+		try {
+			user = await userManager.signinSilent();
+			if (user) notify(user);
+		} catch {
+			notify(null);
+			return null;
+		}
+	}
+	return user ?? null;
 }
 
 /** Initialize auth state on app load. */
