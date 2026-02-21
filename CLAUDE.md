@@ -40,9 +40,10 @@ All detailed documentation lives in `docs/`:
 
 ## Project Overview
 
-A two-player Scrabble AI simulation written in pure Go with no external dependencies.
-Two AI players play against each other using a greedy strategy (always picks the
-highest-scoring valid move). Console-only output with ANSI-colored board display.
+A Scrabble AI solver with three modes: AI-vs-AI simulation, interactive terminal solver,
+and a web UI. The web UI uses Keycloak OIDC for authentication and PostgreSQL for
+board storage (with a file-based fallback for local dev). Two AI players play against
+each other using a greedy strategy (always picks the highest-scoring valid move).
 An interactive solver mode (`./scrabble solve`) lets a human player get move suggestions.
 A web UI mode (`./scrabble serve`) starts an HTTP server with a SvelteKit frontend
 for the same solver workflow in the browser.
@@ -61,7 +62,8 @@ All Go runtime files live in `go/`. The `boards/` directory is in the repo root 
 symlinked into `go/boards` so the code can reference it as a plain relative path.
 If you clone just the `go/` directory standalone, create a `go/boards/` folder there.
 
-There are no external Go dependencies.
+**Go dependencies:** `github.com/jackc/pgx/v5` (PostgreSQL driver + connection pool).
+The `solve` and AI simulation modes have no external deps; pgx is only used by `serve`.
 
 ### Web UI development
 
@@ -70,7 +72,7 @@ Vite dev server in two terminals:
 
 ```bash
 cd go && go run . serve          # API on :8080
-cd web && npm run dev            # Vite on :5173 (proxies /api → :8080)
+cd web && npm run dev            # Vite on :5173 (api.ts points to :8080 in dev mode)
 ```
 
 Production build (single binary with embedded frontend):
@@ -82,6 +84,29 @@ cd ../go && go build -o scrabble .
 ./scrabble serve
 ```
 
+### Docker deployment
+
+The `docker-compose.yml` is copy-pasted into Portainer as a stack for deployment.
+The compose file includes a PostgreSQL service and passes `DATABASE_URL` to the app.
+
+```bash
+docker-compose build             # Build locally (or deploy via Portainer)
+docker-compose up                # Web UI on http://localhost:8031
+```
+
+### Environment variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | No | — | PostgreSQL connection string. If unset, uses file-based `boards/` storage. |
+| `PORT` | No | `8080` | HTTP listen port inside the container |
+| `OIDC_ISSUER_URL` | No | — | Keycloak OIDC issuer URL (Phase 2: auth) |
+| `OIDC_CLIENT_ID` | No | — | Keycloak OIDC client ID (Phase 2: auth) |
+
+### Testing
+
+There is no test suite. The AI simulation mode (`./scrabble`) serves as an integration-level check — if moves are generated and scored correctly through a full game, the engine is working.
+
 ## File layout
 
 ```
@@ -91,12 +116,14 @@ cd ../go && go build -o scrabble .
 ├── CLAUDE.md        # This file
 ├── README.md        # Project readme
 ├── go/              # All Go source and runtime data
-│   ├── main.go          # Entry point; dispatches to runGame, runSolve, or runServer
+│   ├── main.go          # Entry point; dispatches to runGame, runSolve, runServer, or runMigrateBoards
 │   ├── common.go        # Shared engine: Board/Trie, scoring, searchPlay, getPlaySpace
 │   ├── scrabble.go      # AI vs AI game loop (NewBoard, DoTurn, runGame)
 │   ├── solve.go         # Interactive solver UI, findTopNMoves, terminal rendering
-│   ├── server.go        # HTTP server, JSON API handlers, static file serving
-│   ├── go.mod           # Go module file
+│   ├── server.go        # HTTP server, JSON API handlers, static file serving, DB/file routing
+│   ├── db.go            # PostgreSQL connection, migration, board CRUD with ownership
+│   ├── go.mod           # Go module file (pgx/v5 dependency)
+│   ├── go.sum           # Go dependency checksums
 │   ├── dictionary.txt   # 178K-word dictionary (required at runtime)
 │   ├── rulesets.json    # Ruleset definitions (NYT Crossplay, Standard Scrabble)
 │   ├── config.json      # Active ruleset selection (optional; defaults to NYT Crossplay)
@@ -104,14 +131,14 @@ cd ../go && go build -o scrabble .
 │   └── boards -> ../boards  # Symlink to root boards/
 └── web/             # SvelteKit frontend (TypeScript + Svelte 5)
     ├── svelte.config.js     # adapter-static, SPA fallback
-    ├── vite.config.ts       # Vite config with /api proxy for dev
+    ├── vite.config.ts       # Vite config
     ├── package.json
     ├── src/
     │   ├── app.html
     │   ├── app.css          # CSS custom properties, light/dark themes
     │   ├── lib/
-    │   │   ├── types.ts     # Move, Ruleset interfaces
-    │   │   ├── api.ts       # Fetch wrappers for all API endpoints
+    │   │   ├── types.ts     # Move, Ruleset, BoardMeta, BoardRecord interfaces
+    │   │   ├── api.ts       # Fetch wrappers for all API endpoints (UUID-based board ops)
     │   │   └── components/
     │   │       ├── Board.svelte      # 15×15 CSS grid board
     │   │       ├── MoveList.svelte   # Scrollable move list with selection
@@ -147,3 +174,9 @@ For full details see `docs/ALGORITHM.md`. High-level overview:
 **Wildcards:** `'*'` in the rack. DFS expands to all 26 letters but only follows existing trie edges. Placed blanks stored as lowercase on the board (score 0).
 
 **Scoring:** `scoreWord` handles letter/word multipliers (only new tiles activate multiplier squares). Cross-words scored in `scoreMove`. Single-letter words score 0.
+
+**Board Storage (`db.go` / file-based):**
+- If `DATABASE_URL` is set: boards stored in PostgreSQL (`boards` table) with UUID primary keys, per-user ownership (`user_id`), and optional share tokens for public read-only links.
+- If `DATABASE_URL` is not set: falls back to file-based storage in `boards/*.txt` (original behavior, used for local dev and CLI modes).
+- The `solve` and `runGame` CLI commands always use file-based storage.
+- API endpoints use UUID-based board IDs when DB-backed, name-based when file-backed.

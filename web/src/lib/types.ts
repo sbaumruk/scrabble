@@ -17,3 +17,14 @@ export interface Ruleset {
 	tripleLetter: [number, number][];
 	doubleLetter: [number, number][];
 }
+
+export interface BoardMeta {
+	id: string;
+	name: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface BoardRecord extends BoardMeta {
+	board: string[];
+}

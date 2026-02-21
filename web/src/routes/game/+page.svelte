@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import Board from '$lib/components/Board.svelte';
 	import MoveList from '$lib/components/MoveList.svelte';
@@ -10,14 +9,19 @@
 		saveBoard,
 		solve,
 		findOpponentPlacements,
-		getRuleset
+		getRuleset,
+		getSharedBoard,
+		shareBoard
 	} from '$lib/api';
 	import type { Move, Ruleset } from '$lib/types';
 
+	let boardId = $state('');
 	let boardName = $state('');
 	let board = $state<string[]>([]);
 	let ruleset = $state<Ruleset | null>(null);
 	let loading = $state(true);
+	let isReadOnly = $state(false);
+	let shareToken = $state<string | null>(null);
 
 	// My turn state
 	let rack = $state('');
@@ -37,6 +41,10 @@
 	// Status messages
 	let statusMsg = $state('');
 
+	// Share UI
+	let shareUrl = $state('');
+	let showShareCopied = $state(false);
+
 	let previewMove = $derived.by(() => {
 		if (phase === 'my-turn' && mySelectedIndex >= 0 && myMoves[mySelectedIndex]) {
 			return myMoves[mySelectedIndex];
@@ -49,19 +57,34 @@
 
 	onMount(async () => {
 		const params = new URLSearchParams(window.location.search);
-		const name = params.get('board');
-		if (!name) {
+		const id = params.get('id');
+		const shared = params.get('shared');
+
+		if (!id && !shared) {
 			goto('/');
 			return;
 		}
-		boardName = name;
+
 		try {
-			const [boardData, rulesetData] = await Promise.all([
-				getBoard(name),
-				getRuleset()
-			]);
-			board = boardData.board;
-			ruleset = rulesetData;
+			const rulesetData = getRuleset();
+
+			if (shared) {
+				// Shared board (read-only)
+				const sharedData = await getSharedBoard(shared);
+				boardId = sharedData.id;
+				boardName = sharedData.name;
+				board = sharedData.board;
+				isReadOnly = true;
+				shareToken = shared;
+			} else if (id) {
+				// Owned board
+				const boardData = await getBoard(id);
+				boardId = boardData.id;
+				boardName = boardData.name;
+				board = boardData.board;
+			}
+
+			ruleset = await rulesetData;
 		} catch (e) {
 			alert('Failed to load board: ' + (e as Error).message);
 			goto('/');
@@ -112,10 +135,12 @@
 		if (mySelectedIndex < 0 || !myMoves[mySelectedIndex]) return;
 		const move = myMoves[mySelectedIndex];
 		board = applyMoveToBoard(board, move);
-		try {
-			await saveBoard(boardName, board);
-		} catch (e) {
-			console.error('Failed to save:', e);
+		if (!isReadOnly && boardId) {
+			try {
+				await saveBoard(boardId, board);
+			} catch (e) {
+				console.error('Failed to save:', e);
+			}
 		}
 		statusMsg = `Played ${move.word} for ${move.score} points`;
 		myMoves = [];
@@ -148,16 +173,31 @@
 		if (oppSelectedIndex < 0 || !opponentMoves[oppSelectedIndex]) return;
 		const move = opponentMoves[oppSelectedIndex];
 		board = applyMoveToBoard(board, move);
-		try {
-			await saveBoard(boardName, board);
-		} catch (e) {
-			console.error('Failed to save:', e);
+		if (!isReadOnly && boardId) {
+			try {
+				await saveBoard(boardId, board);
+			} catch (e) {
+				console.error('Failed to save:', e);
+			}
 		}
 		statusMsg = `Opponent played ${move.word} for ${move.score} points`;
 		opponentMoves = [];
 		oppSelectedIndex = -1;
 		opponentWord = '';
 		phase = 'my-turn';
+	}
+
+	async function handleShare() {
+		if (!boardId) return;
+		try {
+			const token = await shareBoard(boardId);
+			shareUrl = `${window.location.origin}/game?shared=${token}`;
+			await navigator.clipboard.writeText(shareUrl);
+			showShareCopied = true;
+			setTimeout(() => { showShareCopied = false; }, 2000);
+		} catch (e) {
+			alert('Failed to create share link: ' + (e as Error).message);
+		}
 	}
 
 	function handleOpponentKeydown(e: KeyboardEvent) {
@@ -170,7 +210,18 @@
 {:else}
 	<div class="game">
 		<div class="sidebar">
-			<div class="board-title">{boardName}</div>
+			<div class="board-header">
+				<div class="board-title">{boardName}</div>
+				<div class="board-actions">
+					{#if isReadOnly}
+						<span class="badge read-only">Read-only</span>
+					{:else if boardId}
+						<button class="share-btn" onclick={handleShare} title="Share board">
+							{showShareCopied ? 'Copied!' : 'Share'}
+						</button>
+					{/if}
+				</div>
+			</div>
 
 			{#if statusMsg}
 				<div class="status">{statusMsg}</div>
@@ -273,10 +324,55 @@
 		gap: 12px;
 	}
 
+	.board-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
 	.board-title {
 		font-size: 16px;
 		font-weight: 600;
 		color: var(--text-secondary);
+	}
+
+	.board-actions {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+	}
+
+	.badge {
+		font-size: 11px;
+		padding: 3px 8px;
+		border-radius: 4px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.badge.read-only {
+		background: var(--surface);
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+	}
+
+	.share-btn {
+		padding: 4px 12px;
+		font-size: 13px;
+		font-weight: 500;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--surface);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all 0.1s;
+	}
+
+	.share-btn:hover {
+		background: var(--surface-hover);
+		color: var(--text-primary);
 	}
 
 	.status {

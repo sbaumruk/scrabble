@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { listBoards, createBoard } from '$lib/api';
+	import { listBoards, createBoard, deleteBoard } from '$lib/api';
+	import type { BoardMeta } from '$lib/types';
 
-	let boards = $state<string[]>([]);
+	let boards = $state<BoardMeta[]>([]);
 	let newName = $state('');
 	let loading = $state(true);
 	let creating = $state(false);
@@ -22,17 +23,41 @@
 		if (!name) return;
 		creating = true;
 		try {
-			await createBoard(name);
+			const result = await createBoard(name);
 			newName = '';
-			boards = await listBoards();
+			goto(`/game?id=${encodeURIComponent(result.id)}`);
 		} catch (e) {
 			alert('Failed to create board: ' + (e as Error).message);
+			creating = false;
 		}
-		creating = false;
+	}
+
+	async function handleDelete(board: BoardMeta) {
+		if (!confirm(`Delete "${board.name}"? This cannot be undone.`)) return;
+		try {
+			await deleteBoard(board.id);
+			boards = boards.filter((b) => b.id !== board.id);
+		} catch (e) {
+			alert('Failed to delete board: ' + (e as Error).message);
+		}
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') handleCreate();
+	}
+
+	function formatDate(dateStr: string): string {
+		const d = new Date(dateStr);
+		const now = new Date();
+		const diffMs = now.getTime() - d.getTime();
+		const diffMins = Math.floor(diffMs / 60000);
+		if (diffMins < 1) return 'just now';
+		if (diffMins < 60) return `${diffMins}m ago`;
+		const diffHours = Math.floor(diffMins / 60);
+		if (diffHours < 24) return `${diffHours}h ago`;
+		const diffDays = Math.floor(diffHours / 24);
+		if (diffDays < 7) return `${diffDays}d ago`;
+		return d.toLocaleDateString();
 	}
 </script>
 
@@ -57,11 +82,20 @@
 		<p class="status">No boards yet. Create one to get started.</p>
 	{:else}
 		<div class="board-list">
-			{#each boards as name}
-				<button class="board-card" onclick={() => goto(`/game?board=${encodeURIComponent(name)}`)}>
-					<span class="board-name">{name}</span>
-					<span class="arrow">&rarr;</span>
-				</button>
+			{#each boards as board}
+				<div class="board-card">
+					<button class="board-main" onclick={() => goto(`/game?id=${encodeURIComponent(board.id)}`)}>
+						<span class="board-name">{board.name}</span>
+						<span class="board-date">{formatDate(board.updatedAt)}</span>
+					</button>
+					<button
+						class="delete-btn"
+						onclick={(e) => { e.stopPropagation(); handleDelete(board); }}
+						title="Delete board"
+					>
+						&times;
+					</button>
+				</div>
 			{/each}
 		</div>
 	{/if}
@@ -134,13 +168,9 @@
 	.board-card {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		padding: 14px 16px;
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: 8px;
-		text-align: left;
-		font-size: 15px;
 		transition: background 0.1s;
 	}
 
@@ -148,13 +178,43 @@
 		background: var(--surface-hover);
 	}
 
+	.board-main {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 14px 16px;
+		background: none;
+		border: none;
+		text-align: left;
+		font-size: 15px;
+		cursor: pointer;
+		color: inherit;
+	}
+
 	.board-name {
 		font-weight: 500;
 		color: var(--text-primary);
 	}
 
-	.arrow {
+	.board-date {
 		color: var(--text-muted);
-		font-size: 18px;
+		font-size: 13px;
+	}
+
+	.delete-btn {
+		padding: 8px 12px;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		font-size: 20px;
+		line-height: 1;
+		cursor: pointer;
+		border-radius: 0 8px 8px 0;
+		transition: color 0.1s;
+	}
+
+	.delete-btn:hover {
+		color: #e53e3e;
 	}
 </style>

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -119,13 +120,9 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+// ── File-based board handlers (fallback when no DATABASE_URL) ────────────────
 
-func handleListBoards(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, 405, "method not allowed")
-		return
-	}
+func handleListBoardsFile(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir("boards")
 	if err != nil {
 		writeJSON(w, 200, map[string][]string{"boards": {}})
@@ -143,7 +140,7 @@ func handleListBoards(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string][]string{"boards": names})
 }
 
-func handleGetBoard(w http.ResponseWriter, r *http.Request, name string) {
+func handleGetBoardFile(w http.ResponseWriter, r *http.Request, name string) {
 	path := filepath.Join("boards", name+".txt")
 	board, err := parseBoardFile(path)
 	if err != nil {
@@ -156,7 +153,7 @@ func handleGetBoard(w http.ResponseWriter, r *http.Request, name string) {
 	})
 }
 
-func handleSaveBoard(w http.ResponseWriter, r *http.Request, name string) {
+func handleSaveBoardFile(w http.ResponseWriter, r *http.Request, name string) {
 	var req struct {
 		Board []string `json:"board"`
 	}
@@ -177,7 +174,7 @@ func handleSaveBoard(w http.ResponseWriter, r *http.Request, name string) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func handleCreateBoard(w http.ResponseWriter, r *http.Request) {
+func handleCreateBoardFile(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -197,6 +194,155 @@ func handleCreateBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
+
+// ── Database-backed board handlers ───────────────────────────────────────────
+
+func handleListBoardsDB(db *DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := getUserIDFromContext(r.Context())
+		boards, err := db.ListBoards(r.Context(), userID)
+		if err != nil {
+			writeError(w, 500, "failed to list boards")
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"boards": boards})
+	}
+}
+
+func handleGetBoardDB(db *DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/boards/")
+		if id == "" {
+			writeError(w, 400, "board id required")
+			return
+		}
+
+		// Route: /api/boards/shared/{token}
+		if strings.HasPrefix(id, "shared/") {
+			token := strings.TrimPrefix(id, "shared/")
+			handleGetSharedBoardDB(db, token, w, r)
+			return
+		}
+
+		// Route: /api/boards/{id}/share
+		if strings.HasSuffix(id, "/share") {
+			id = strings.TrimSuffix(id, "/share")
+			handleShareBoardDB(db, id, w, r)
+			return
+		}
+
+		userID := getUserIDFromContext(r.Context())
+
+		switch r.Method {
+		case http.MethodGet:
+			board, err := db.GetBoard(r.Context(), id, userID)
+			if err != nil {
+				writeError(w, 404, "board not found")
+				return
+			}
+			writeJSON(w, 200, board)
+
+		case http.MethodPost:
+			var req struct {
+				Board []string `json:"board"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, 400, "invalid JSON")
+				return
+			}
+			if len(req.Board) != 15 {
+				writeError(w, 400, "board must have 15 rows")
+				return
+			}
+			if err := db.SaveBoard(r.Context(), id, userID, req.Board); err != nil {
+				writeError(w, 404, "board not found")
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		case http.MethodDelete:
+			if err := db.DeleteBoard(r.Context(), id, userID); err != nil {
+				writeError(w, 404, "board not found")
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			writeError(w, 405, "method not allowed")
+		}
+	}
+}
+
+func handleCreateBoardDB(db *DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "invalid JSON")
+			return
+		}
+		req.Name = strings.TrimSpace(req.Name)
+		if req.Name == "" {
+			writeError(w, 400, "name is required")
+			return
+		}
+
+		userID := getUserIDFromContext(r.Context())
+		id, err := db.CreateBoard(r.Context(), req.Name, userID)
+		if err != nil {
+			writeError(w, 500, "failed to create board")
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
+	}
+}
+
+func handleGetSharedBoardDB(db *DB, token string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+	board, err := db.GetBoardByShareToken(r.Context(), token)
+	if err != nil {
+		writeError(w, 404, "shared board not found")
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{
+		"id":    board.ID,
+		"name":  board.Name,
+		"board": board.Board,
+	})
+}
+
+func handleShareBoardDB(db *DB, id string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "method not allowed")
+		return
+	}
+
+	userID := getUserIDFromContext(r.Context())
+
+	// Check if share token already exists
+	existing, err := db.GetShareToken(r.Context(), id, userID)
+	if err != nil {
+		writeError(w, 404, "board not found")
+		return
+	}
+	if existing != nil {
+		writeJSON(w, 200, map[string]string{"shareToken": *existing})
+		return
+	}
+
+	token, err := db.SetShareToken(r.Context(), id, userID)
+	if err != nil {
+		writeError(w, 500, "failed to create share link")
+		return
+	}
+	writeJSON(w, 200, map[string]string{"shareToken": token})
+}
+
+// ── Stateless computation handlers ──────────────────────────────────────────
 
 func handleSolve(wordlist map[uint64]struct{}, trie *TrieNode) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -307,6 +453,21 @@ func handleRuleset(rulesetName string) http.HandlerFunc {
 	}
 }
 
+// ── Auth context helpers (stub for Phase 1, real implementation in Phase 2) ──
+
+type contextKey string
+
+const userIDContextKey contextKey = "userID"
+
+// getUserIDFromContext extracts the authenticated user's ID from the request
+// context. Returns "" if no user is authenticated (Phase 1: always "").
+func getUserIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(userIDContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // ── Server ───────────────────────────────────────────────────────────────────
 
 func runServer() {
@@ -326,67 +487,96 @@ func runServer() {
 		os.Exit(1)
 	}
 
-	if err := os.MkdirAll("boards", 0755); err != nil {
-		fmt.Println("Cannot create boards/ directory:", err)
-		os.Exit(1)
+	// Database connection (optional — falls back to file-based if not configured)
+	var db *DB
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		fmt.Println("Connecting to database...")
+		db, err = NewDB(context.Background(), dbURL)
+		if err != nil {
+			fmt.Println("Failed to connect to database:", err)
+			os.Exit(1)
+		}
+		defer db.Close()
+		fmt.Println("Running database migrations...")
+		if err := db.Migrate(context.Background()); err != nil {
+			fmt.Println("Failed to run migrations:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Database ready.")
+	} else {
+		fmt.Println("No DATABASE_URL set, using file-based board storage.")
+		if err := os.MkdirAll("boards", 0755); err != nil {
+			fmt.Println("Cannot create boards/ directory:", err)
+			os.Exit(1)
+		}
 	}
 
 	mux := http.NewServeMux()
 
-	// API routes
+	// Stateless computation routes (always public, no DB needed)
 	mux.HandleFunc("/api/solve", handleSolve(wordlist, trie))
 	mux.HandleFunc("/api/opponent", handleOpponent(wordlist, trie))
 	mux.HandleFunc("/api/ruleset", handleRuleset(rulesetName))
 
-	mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			handleListBoards(w, r)
-		} else if r.Method == http.MethodPost {
-			handleCreateBoard(w, r)
-		} else {
-			writeError(w, 405, "method not allowed")
-		}
-	})
-
-	mux.HandleFunc("/api/boards/", func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/api/boards/")
-		if name == "" {
-			writeError(w, 400, "board name required")
-			return
-		}
-		if r.Method == http.MethodGet {
-			handleGetBoard(w, r, name)
-		} else if r.Method == http.MethodPost {
-			handleSaveBoard(w, r, name)
-		} else {
-			writeError(w, 405, "method not allowed")
-		}
-	})
+	// Board CRUD routes — DB or file-based
+	if db != nil {
+		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				handleListBoardsDB(db)(w, r)
+			} else if r.Method == http.MethodPost {
+				handleCreateBoardDB(db)(w, r)
+			} else {
+				writeError(w, 405, "method not allowed")
+			}
+		})
+		mux.HandleFunc("/api/boards/", handleGetBoardDB(db))
+	} else {
+		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				handleListBoardsFile(w, r)
+			} else if r.Method == http.MethodPost {
+				handleCreateBoardFile(w, r)
+			} else {
+				writeError(w, 405, "method not allowed")
+			}
+		})
+		mux.HandleFunc("/api/boards/", func(w http.ResponseWriter, r *http.Request) {
+			name := strings.TrimPrefix(r.URL.Path, "/api/boards/")
+			if name == "" {
+				writeError(w, 400, "board name required")
+				return
+			}
+			if r.Method == http.MethodGet {
+				handleGetBoardFile(w, r, name)
+			} else if r.Method == http.MethodPost {
+				handleSaveBoardFile(w, r, name)
+			} else {
+				writeError(w, 405, "method not allowed")
+			}
+		})
+	}
 
 	// Static files with SPA fallback
 	staticFS, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		fmt.Println("Static files not embedded (run in dev mode with Vite):", err)
-		// In dev mode, only serve API routes; Vite handles static files
 		staticFS = nil
 	}
 
 	if staticFS != nil {
 		fileServer := http.FileServer(http.FS(staticFS))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			// Try to serve the file directly
 			path := r.URL.Path
 			if path == "/" {
 				path = "/index.html"
 			}
-			// Check if file exists in embedded FS
 			f, err := staticFS.Open(strings.TrimPrefix(path, "/"))
 			if err == nil {
 				f.Close()
 				fileServer.ServeHTTP(w, r)
 				return
 			}
-			// SPA fallback: serve index.html for non-file paths
+			// SPA fallback
 			r.URL.Path = "/"
 			fileServer.ServeHTTP(w, r)
 		})
@@ -396,12 +586,13 @@ func runServer() {
 	if p := os.Getenv("PORT"); p != "" {
 		port = p
 	}
-	// CORS wrapper around entire mux for dev mode (Vite on :5173 → API on :8080)
+
+	// CORS wrapper for dev mode (Vite on :5173 → API on :8080)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(204)
 				return
@@ -411,6 +602,11 @@ func runServer() {
 	})
 
 	fmt.Printf("Scrabble server running on http://localhost:%s (ruleset: %s)\n", port, rulesetName)
+	if db != nil {
+		fmt.Println("  Board storage: PostgreSQL")
+	} else {
+		fmt.Println("  Board storage: file-based (boards/)")
+	}
 	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		fmt.Println("Server error:", err)
 		os.Exit(1)

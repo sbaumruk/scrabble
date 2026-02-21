@@ -1,16 +1,39 @@
 services:
+  postgres:
+    image: postgres:16
+    container_name: scrabble_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scrabble
+      POSTGRES_PASSWORD: scrabblepass
+      POSTGRES_DB: scrabble
+    volumes:
+      - scrabble_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scrabble"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   scrabble:
     build: .
     container_name: scrabble
     ports:
       - "8031:8080"
-    volumes:
-      - /Users/jarvis/docker/scrabble/boards:/app/boards
+    environment:
+      - DATABASE_URL=postgres://scrabble:scrabblepass@postgres:5432/scrabble?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
+      - default
       - jarvis
 
 networks:
   jarvis:
     external: true
     name: jarvis_default
+
+volumes:
+  scrabble_postgres:
