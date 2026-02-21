@@ -70,8 +70,8 @@ func (d *DB) Migrate(ctx context.Context) error {
 
 // ── Board CRUD ───────────────────────────────────────────────────────────────
 
-// ListBoards returns all boards belonging to the given user.
-// If userID is empty, returns all boards (legacy/anonymous mode).
+// ListBoards returns boards belonging to the given user.
+// If userID is empty, returns boards with no owner (anonymous boards).
 func (d *DB) ListBoards(ctx context.Context, userID string) ([]BoardMeta, error) {
 	var query string
 	var args []interface{}
@@ -82,7 +82,7 @@ func (d *DB) ListBoards(ctx context.Context, userID string) ([]BoardMeta, error)
 		args = []interface{}{userID}
 	} else {
 		query = `SELECT id, user_id, name, share_token, created_at, updated_at
-			FROM boards ORDER BY updated_at DESC`
+			FROM boards WHERE user_id IS NULL ORDER BY updated_at DESC`
 	}
 
 	rows, err := d.pool.Query(ctx, query, args...)
@@ -105,8 +105,8 @@ func (d *DB) ListBoards(ctx context.Context, userID string) ([]BoardMeta, error)
 	return boards, rows.Err()
 }
 
-// GetBoard loads a board by ID. If userID is non-empty, also checks ownership.
-func (d *DB) GetBoard(ctx context.Context, id string, userID string) (*BoardRecord, error) {
+// GetBoard loads a board by ID. No ownership check — caller decides access.
+func (d *DB) GetBoard(ctx context.Context, id string) (*BoardRecord, error) {
 	var b BoardRecord
 	var boardData string
 	err := d.pool.QueryRow(ctx,
@@ -115,11 +115,6 @@ func (d *DB) GetBoard(ctx context.Context, id string, userID string) (*BoardReco
 	).Scan(&b.ID, &b.UserID, &b.Name, &boardData, &b.ShareToken, &b.CreatedAt, &b.UpdatedAt)
 	if err != nil {
 		return nil, err
-	}
-
-	// Ownership check: if userID provided, board must belong to that user
-	if userID != "" && (b.UserID == nil || *b.UserID != userID) {
-		return nil, fmt.Errorf("board not found")
 	}
 
 	b.Board = strings.Split(boardData, "\n")
@@ -151,6 +146,7 @@ func (d *DB) GetBoardByShareToken(ctx context.Context, token string) (*BoardReco
 }
 
 // SaveBoard updates a board's data. Checks ownership via userID.
+// Anonymous users (empty userID) can only update boards with no owner.
 func (d *DB) SaveBoard(ctx context.Context, id string, userID string, boardRows []string) error {
 	boardData := strings.Join(boardRows, "\n")
 
@@ -165,7 +161,7 @@ func (d *DB) SaveBoard(ctx context.Context, id string, userID string, boardRows 
 	} else {
 		tag, e := d.pool.Exec(ctx,
 			`UPDATE boards SET board_data = $1, updated_at = NOW()
-				WHERE id = $2`,
+				WHERE id = $2 AND user_id IS NULL`,
 			boardData, id)
 		n, err = tag.RowsAffected(), e
 	}
@@ -203,6 +199,7 @@ func (d *DB) CreateBoard(ctx context.Context, name string, userID string) (strin
 }
 
 // DeleteBoard removes a board. Checks ownership via userID.
+// Anonymous users (empty userID) can only delete boards with no owner.
 func (d *DB) DeleteBoard(ctx context.Context, id string, userID string) error {
 	var n int64
 	var err error
@@ -212,7 +209,7 @@ func (d *DB) DeleteBoard(ctx context.Context, id string, userID string) error {
 		n, err = tag.RowsAffected(), e
 	} else {
 		tag, e := d.pool.Exec(ctx,
-			`DELETE FROM boards WHERE id = $1`, id)
+			`DELETE FROM boards WHERE id = $1 AND user_id IS NULL`, id)
 		n, err = tag.RowsAffected(), e
 	}
 	if err != nil {
@@ -225,6 +222,7 @@ func (d *DB) DeleteBoard(ctx context.Context, id string, userID string) error {
 }
 
 // SetShareToken generates and sets a share token for a board. Returns the token.
+// Anonymous users (empty userID) can only share boards with no owner.
 func (d *DB) SetShareToken(ctx context.Context, id string, userID string) (string, error) {
 	token := generateShareToken()
 	var n int64
@@ -238,7 +236,7 @@ func (d *DB) SetShareToken(ctx context.Context, id string, userID string) (strin
 	} else {
 		tag, e := d.pool.Exec(ctx,
 			`UPDATE boards SET share_token = $1, updated_at = NOW()
-				WHERE id = $2`,
+				WHERE id = $2 AND user_id IS NULL`,
 			token, id)
 		n, err = tag.RowsAffected(), e
 	}
@@ -252,6 +250,7 @@ func (d *DB) SetShareToken(ctx context.Context, id string, userID string) (strin
 }
 
 // GetShareToken returns the existing share token for a board, if any.
+// Anonymous users (empty userID) can only read tokens from boards with no owner.
 func (d *DB) GetShareToken(ctx context.Context, id string, userID string) (*string, error) {
 	var token *string
 	var query string
@@ -261,7 +260,7 @@ func (d *DB) GetShareToken(ctx context.Context, id string, userID string) (*stri
 		query = `SELECT share_token FROM boards WHERE id = $1 AND user_id = $2`
 		args = []interface{}{id, userID}
 	} else {
-		query = `SELECT share_token FROM boards WHERE id = $1`
+		query = `SELECT share_token FROM boards WHERE id = $1 AND user_id IS NULL`
 		args = []interface{}{id}
 	}
 

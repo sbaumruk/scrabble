@@ -77,11 +77,12 @@
 				isReadOnly = true;
 				shareToken = shared;
 			} else if (id) {
-				// Owned board
 				const boardData = await getBoard(id);
 				boardId = boardData.id;
 				boardName = boardData.name;
 				board = boardData.board;
+				// Read-only if user doesn't own this board
+				isReadOnly = boardData.isOwner === false;
 			}
 
 			ruleset = await rulesetData;

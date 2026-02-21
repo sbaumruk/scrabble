@@ -27,4 +27,5 @@ export interface BoardMeta {
 
 export interface BoardRecord extends BoardMeta {
 	board: string[];
+	isOwner?: boolean;
 }

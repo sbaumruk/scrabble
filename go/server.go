@@ -197,14 +197,9 @@ func handleCreateBoardFile(w http.ResponseWriter, r *http.Request) {
 
 // ── Database-backed board handlers ───────────────────────────────────────────
 
-func handleListBoardsDB(db *DB, av *AuthVerifier) http.HandlerFunc {
+func handleListBoardsDB(db *DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := getUserIDFromContext(r.Context())
-		// When auth is active but user is not authenticated, return empty list
-		if av != nil && userID == "" {
-			writeJSON(w, 200, map[string]interface{}{"boards": []BoardMeta{}})
-			return
-		}
 		boards, err := db.ListBoards(r.Context(), userID)
 		if err != nil {
 			writeError(w, 500, "failed to list boards")
@@ -214,7 +209,16 @@ func handleListBoardsDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 	}
 }
 
-func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
+// isOwner returns true if the requesting user owns the board.
+func isOwner(userID string, boardUserID *string) bool {
+	if userID != "" {
+		return boardUserID != nil && *boardUserID == userID
+	}
+	// Anonymous user owns anonymous boards (user_id IS NULL)
+	return boardUserID == nil
+}
+
+func handleGetBoardDB(db *DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/boards/")
 		if id == "" {
@@ -229,10 +233,10 @@ func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 			return
 		}
 
-		// Route: /api/boards/{id}/share — requires auth
+		// Route: /api/boards/{id}/share
 		if strings.HasSuffix(id, "/share") {
 			id = strings.TrimSuffix(id, "/share")
-			handleShareBoardDB(db, av, id, w, r)
+			handleShareBoardDB(db, id, w, r)
 			return
 		}
 
@@ -240,18 +244,21 @@ func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
-			board, err := db.GetBoard(r.Context(), id, userID)
+			board, err := db.GetBoard(r.Context(), id)
 			if err != nil {
 				writeError(w, 404, "board not found")
 				return
 			}
-			writeJSON(w, 200, board)
+			writeJSON(w, 200, map[string]interface{}{
+				"id":        board.ID,
+				"name":      board.Name,
+				"board":     board.Board,
+				"createdAt": board.CreatedAt,
+				"updatedAt": board.UpdatedAt,
+				"isOwner":   isOwner(userID, board.UserID),
+			})
 
 		case http.MethodPost:
-			if av != nil && userID == "" {
-				writeError(w, 401, "authentication required")
-				return
-			}
 			var req struct {
 				Board []string `json:"board"`
 			}
@@ -264,18 +271,14 @@ func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 				return
 			}
 			if err := db.SaveBoard(r.Context(), id, userID, req.Board); err != nil {
-				writeError(w, 404, "board not found")
+				writeError(w, 404, "board not found or not owned by you")
 				return
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		case http.MethodDelete:
-			if av != nil && userID == "" {
-				writeError(w, 401, "authentication required")
-				return
-			}
 			if err := db.DeleteBoard(r.Context(), id, userID); err != nil {
-				writeError(w, 404, "board not found")
+				writeError(w, 404, "board not found or not owned by you")
 				return
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
@@ -286,13 +289,9 @@ func handleGetBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
 	}
 }
 
-func handleCreateBoardDB(db *DB, av *AuthVerifier) http.HandlerFunc {
+func handleCreateBoardDB(db *DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := getUserIDFromContext(r.Context())
-		if av != nil && userID == "" {
-			writeError(w, 401, "authentication required")
-			return
-		}
 
 		var req struct {
 			Name string `json:"name"`
@@ -333,17 +332,13 @@ func handleGetSharedBoardDB(db *DB, token string, w http.ResponseWriter, r *http
 	})
 }
 
-func handleShareBoardDB(db *DB, av *AuthVerifier, id string, w http.ResponseWriter, r *http.Request) {
+func handleShareBoardDB(db *DB, id string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "method not allowed")
 		return
 	}
 
 	userID := getUserIDFromContext(r.Context())
-	if av != nil && userID == "" {
-		writeError(w, 401, "authentication required")
-		return
-	}
 
 	// Check if share token already exists
 	existing, err := db.GetShareToken(r.Context(), id, userID)
@@ -566,14 +561,14 @@ func runServer() {
 	if db != nil {
 		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				handleListBoardsDB(db, av)(w, r)
+				handleListBoardsDB(db)(w, r)
 			} else if r.Method == http.MethodPost {
-				handleCreateBoardDB(db, av)(w, r)
+				handleCreateBoardDB(db)(w, r)
 			} else {
 				writeError(w, 405, "method not allowed")
 			}
 		})
-		mux.HandleFunc("/api/boards/", handleGetBoardDB(db, av))
+		mux.HandleFunc("/api/boards/", handleGetBoardDB(db))
 	} else {
 		mux.HandleFunc("/api/boards", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {

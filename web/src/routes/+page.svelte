@@ -2,30 +2,26 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { listBoards, createBoard, deleteBoard } from '$lib/api';
-	import { login, onAuthChange } from '$lib/auth';
-	import type { User } from 'oidc-client-ts';
 	import type { BoardMeta } from '$lib/types';
 
-	let user = $state<User | null>(null);
 	let boards = $state<BoardMeta[]>([]);
 	let newName = $state('');
 	let loading = $state(true);
 	let creating = $state(false);
 
 	onMount(() => {
-		const unsub = onAuthChange(async (u) => {
-			user = u;
-			// Reload boards when auth state changes
-			loading = true;
-			try {
-				boards = await listBoards();
-			} catch (e) {
-				console.error('Failed to load boards:', e);
-			}
-			loading = false;
-		});
-		return unsub;
+		loadBoards();
 	});
+
+	async function loadBoards() {
+		loading = true;
+		try {
+			boards = await listBoards();
+		} catch (e) {
+			console.error('Failed to load boards:', e);
+		}
+		loading = false;
+	}
 
 	async function handleCreate() {
 		const name = newName.trim();
@@ -73,46 +69,39 @@
 <div class="picker">
 	<h1>Boards</h1>
 
-	{#if user}
-		<div class="create-row">
-			<input
-				bind:value={newName}
-				onkeydown={handleKeydown}
-				placeholder="New board name"
-				disabled={creating}
-			/>
-			<button onclick={handleCreate} disabled={creating || !newName.trim()}>
-				{creating ? 'Creating...' : 'Create'}
-			</button>
-		</div>
+	<div class="create-row">
+		<input
+			bind:value={newName}
+			onkeydown={handleKeydown}
+			placeholder="New board name"
+			disabled={creating}
+		/>
+		<button onclick={handleCreate} disabled={creating || !newName.trim()}>
+			{creating ? 'Creating...' : 'Create'}
+		</button>
+	</div>
 
-		{#if loading}
-			<p class="status">Loading...</p>
-		{:else if boards.length === 0}
-			<p class="status">No boards yet. Create one to get started.</p>
-		{:else}
-			<div class="board-list">
-				{#each boards as board}
-					<div class="board-card">
-						<button class="board-main" onclick={() => goto(`/game?id=${encodeURIComponent(board.id)}`)}>
-							<span class="board-name">{board.name}</span>
-							<span class="board-date">{formatDate(board.updatedAt)}</span>
-						</button>
-						<button
-							class="delete-btn"
-							onclick={(e) => { e.stopPropagation(); handleDelete(board); }}
-							title="Delete board"
-						>
-							&times;
-						</button>
-					</div>
-				{/each}
-			</div>
-		{/if}
+	{#if loading}
+		<p class="status">Loading...</p>
+	{:else if boards.length === 0}
+		<p class="status">No boards yet. Create one to get started.</p>
 	{:else}
-		<div class="auth-prompt">
-			<p>Log in to save and manage your boards.</p>
-			<button class="login-btn" onclick={() => login()}>Log in</button>
+		<div class="board-list">
+			{#each boards as board}
+				<div class="board-card">
+					<button class="board-main" onclick={() => goto(`/game?id=${encodeURIComponent(board.id)}`)}>
+						<span class="board-name">{board.name}</span>
+						<span class="board-date">{formatDate(board.updatedAt)}</span>
+					</button>
+					<button
+						class="delete-btn"
+						onclick={(e) => { e.stopPropagation(); handleDelete(board); }}
+						title="Delete board"
+					>
+						&times;
+					</button>
+				</div>
+			{/each}
 		</div>
 	{/if}
 </div>
@@ -128,33 +117,6 @@
 		font-weight: 700;
 		margin-bottom: 16px;
 	}
-
-	.auth-prompt {
-		text-align: center;
-		padding: 40px 0;
-	}
-
-	.auth-prompt p {
-		color: var(--text-muted);
-		margin-bottom: 16px;
-		font-size: 15px;
-	}
-
-	.login-btn {
-		padding: 10px 24px;
-		background: var(--accent);
-		color: var(--accent-text);
-		border: none;
-		border-radius: 6px;
-		font-weight: 600;
-		font-size: 14px;
-		cursor: pointer;
-	}
-
-	.login-btn:hover {
-		background: var(--accent-hover);
-	}
-
 	.create-row {
 		display: flex;
 		gap: 8px;
