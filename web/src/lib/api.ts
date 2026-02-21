@@ -5,15 +5,28 @@ import { getAccessToken } from './auth';
 // In production, both are served from the same origin.
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8080' : '';
 
+/** Stable per-browser anonymous ID so anonymous boards are scoped to this browser. */
+function getAnonymousId(): string {
+	const key = 'scrabble_anonymous_id';
+	let id = localStorage.getItem(key);
+	if (!id) {
+		id = crypto.randomUUID();
+		localStorage.setItem(key, id);
+	}
+	return id;
+}
+
 async function fetchJSON<T>(url: string, opts?: RequestInit): Promise<T> {
 	const headers: Record<string, string> = {
 		...((opts?.headers as Record<string, string>) ?? {})
 	};
 
-	// Attach auth token if available
+	// Attach auth token if available, otherwise send anonymous session ID
 	const token = await getAccessToken();
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
+	} else {
+		headers['X-Anonymous-Id'] = getAnonymousId();
 	}
 
 	const res = await fetch(API_BASE + url, { ...opts, headers });

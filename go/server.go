@@ -211,11 +211,10 @@ func handleListBoardsDB(db *DB) http.HandlerFunc {
 
 // isOwner returns true if the requesting user owns the board.
 func isOwner(userID string, boardUserID *string) bool {
-	if userID != "" {
-		return boardUserID != nil && *boardUserID == userID
+	if userID == "" || boardUserID == nil {
+		return false
 	}
-	// Anonymous user owns anonymous boards (user_id IS NULL)
-	return boardUserID == nil
+	return *boardUserID == userID
 }
 
 func handleGetBoardDB(db *DB) http.HandlerFunc {
@@ -631,7 +630,7 @@ func runServer() {
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Anonymous-Id")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(204)
 				return
@@ -639,6 +638,13 @@ func runServer() {
 			// Extract auth token into request context
 			if av != nil {
 				r = extractAuth(av, r)
+			}
+			// If no authenticated user, fall back to anonymous session ID
+			if getUserIDFromContext(r.Context()) == "" {
+				if anonID := r.Header.Get("X-Anonymous-Id"); anonID != "" {
+					ctx := context.WithValue(r.Context(), userIDContextKey, "anon:"+anonID)
+					r = r.WithContext(ctx)
+				}
 			}
 		}
 		mux.ServeHTTP(w, r)
