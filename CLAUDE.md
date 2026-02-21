@@ -62,8 +62,10 @@ All Go runtime files live in `go/`. The `boards/` directory is in the repo root 
 symlinked into `go/boards` so the code can reference it as a plain relative path.
 If you clone just the `go/` directory standalone, create a `go/boards/` folder there.
 
-**Go dependencies:** `github.com/jackc/pgx/v5` (PostgreSQL driver + connection pool).
-The `solve` and AI simulation modes have no external deps; pgx is only used by `serve`.
+**Go dependencies:** `github.com/jackc/pgx/v5` (PostgreSQL driver + connection pool),
+`github.com/coreos/go-oidc/v3` (OIDC discovery + JWT verification).
+The `solve` and AI simulation modes have no external deps; pgx and go-oidc are only
+used by `serve`.
 
 ### Web UI development
 
@@ -100,8 +102,10 @@ docker-compose up                # Web UI on http://localhost:8031
 |---|---|---|---|
 | `DATABASE_URL` | No | — | PostgreSQL connection string. If unset, uses file-based `boards/` storage. |
 | `PORT` | No | `8080` | HTTP listen port inside the container |
-| `OIDC_ISSUER_URL` | No | — | Keycloak OIDC issuer URL (Phase 2: auth) |
-| `OIDC_CLIENT_ID` | No | — | Keycloak OIDC client ID (Phase 2: auth) |
+| `OIDC_ISSUER_URL` | No | — | Keycloak OIDC issuer URL (e.g. `https://auth.spencerbaumruk.com/realms/master`) |
+| `OIDC_CLIENT_ID` | No | — | Keycloak OIDC client ID (e.g. `scrabble`) |
+| `VITE_OIDC_AUTHORITY` | No | `https://auth.spencerbaumruk.com/realms/master` | Frontend OIDC authority (build-time) |
+| `VITE_OIDC_CLIENT_ID` | No | `scrabble` | Frontend OIDC client ID (build-time) |
 
 ### Testing
 
@@ -122,6 +126,7 @@ There is no test suite. The AI simulation mode (`./scrabble`) serves as an integ
 │   ├── solve.go         # Interactive solver UI, findTopNMoves, terminal rendering
 │   ├── server.go        # HTTP server, JSON API handlers, static file serving, DB/file routing
 │   ├── db.go            # PostgreSQL connection, migration, board CRUD with ownership
+│   ├── auth.go          # OIDC token verification, auth middleware, /api/me endpoint
 │   ├── go.mod           # Go module file (pgx/v5 dependency)
 │   ├── go.sum           # Go dependency checksums
 │   ├── dictionary.txt   # 178K-word dictionary (required at runtime)
@@ -138,17 +143,20 @@ There is no test suite. The AI simulation mode (`./scrabble`) serves as an integ
     │   ├── app.css          # CSS custom properties, light/dark themes
     │   ├── lib/
     │   │   ├── types.ts     # Move, Ruleset, BoardMeta, BoardRecord interfaces
-    │   │   ├── api.ts       # Fetch wrappers for all API endpoints (UUID-based board ops)
+    │   │   ├── api.ts       # Fetch wrappers for all API endpoints (auto-attaches Bearer token)
+    │   │   ├── auth.ts      # OIDC client (oidc-client-ts): login, logout, token management
     │   │   └── components/
     │   │       ├── Board.svelte      # 15×15 CSS grid board
     │   │       ├── MoveList.svelte   # Scrollable move list with selection
     │   │       └── RackInput.svelte  # Tile input with visual slots
     │   └── routes/
-    │       ├── +layout.svelte  # App shell: header, dark mode toggle
+    │       ├── +layout.svelte  # App shell: header, auth UI, dark mode toggle
     │       ├── +layout.ts      # SSR disabled
-    │       ├── +page.svelte    # Board picker (home screen)
+    │       ├── +page.svelte    # Board picker (auth-aware: boards if logged in, login prompt if not)
+    │       ├── auth/callback/
+    │       │   └── +page.svelte  # OIDC redirect callback handler
     │       └── game/
-    │           └── +page.svelte  # Main game view (solve + opponent)
+    │           └── +page.svelte  # Main game view (solve + opponent, shared boards read-only)
     └── build/               # Production build output (gitignored)
 ```
 
@@ -180,3 +188,9 @@ For full details see `docs/ALGORITHM.md`. High-level overview:
 - If `DATABASE_URL` is not set: falls back to file-based storage in `boards/*.txt` (original behavior, used for local dev and CLI modes).
 - The `solve` and `runGame` CLI commands always use file-based storage.
 - API endpoints use UUID-based board IDs when DB-backed, name-based when file-backed.
+
+**Authentication (`auth.go` / `auth.ts`):**
+- Backend: If `OIDC_ISSUER_URL` + `OIDC_CLIENT_ID` env vars are set, OIDC is active. The server performs JWKS discovery on startup and validates JWT access tokens on each API request.
+- Board mutations (create, save, delete, share) require authentication when OIDC is configured. Solver/ruleset endpoints are always public. Board list returns empty for unauthenticated users.
+- Frontend: Uses `oidc-client-ts` with Authorization Code + PKCE flow. Login redirects to Keycloak, callback handled at `/auth/callback`. Access tokens stored in localStorage and auto-renewed. All `fetchJSON` calls include `Authorization: Bearer` header when a token is available.
+- Keycloak setup: Public OIDC client `scrabble` in the master realm. Valid redirect URIs include the production, Tailscale, and localhost origins.
