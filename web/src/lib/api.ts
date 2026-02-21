@@ -1,4 +1,5 @@
 import type { Move, Ruleset, BoardMeta, BoardRecord } from './types';
+import { getAccessToken } from './auth';
 
 // In dev mode, Vite serves on :5173 but the Go API is on :8080.
 // In production, both are served from the same origin.
@@ -8,6 +9,12 @@ async function fetchJSON<T>(url: string, opts?: RequestInit): Promise<T> {
 	const headers: Record<string, string> = {
 		...((opts?.headers as Record<string, string>) ?? {})
 	};
+
+	// Attach auth token if available
+	const token = await getAccessToken();
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
 
 	const res = await fetch(API_BASE + url, { ...opts, headers });
 	if (!res.ok) {
@@ -86,4 +93,10 @@ export async function findOpponentPlacements(board: string[], word: string): Pro
 
 export async function getRuleset(): Promise<Ruleset> {
 	return fetchJSON('/api/ruleset');
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export async function getMe(): Promise<{ sub: string; email: string; preferred_username: string }> {
+	return fetchJSON('/api/me');
 }

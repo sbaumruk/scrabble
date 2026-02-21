@@ -1,12 +1,17 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { initAuth, login, logout, onAuthChange } from '$lib/auth';
+	import type { User } from 'oidc-client-ts';
 
 	let { children } = $props();
 
 	let theme = $state('light');
+	let user = $state<User | null>(null);
+	let authReady = $state(false);
 
 	onMount(() => {
+		// Theme
 		const saved = localStorage.getItem('theme');
 		if (saved) {
 			theme = saved;
@@ -14,6 +19,11 @@
 			theme = 'dark';
 		}
 		document.documentElement.setAttribute('data-theme', theme);
+
+		// Auth
+		initAuth().then(() => { authReady = true; });
+		const unsub = onAuthChange((u) => { user = u; });
+		return unsub;
 	});
 
 	function toggleTheme() {
@@ -21,14 +31,31 @@
 		localStorage.setItem('theme', theme);
 		document.documentElement.setAttribute('data-theme', theme);
 	}
+
+	function displayName(): string {
+		if (!user?.profile) return '';
+		return user.profile.preferred_username as string
+			|| user.profile.email as string
+			|| 'User';
+	}
 </script>
 
 <div class="app">
 	<header>
 		<a href="/" class="logo">Scrabble</a>
-		<button class="theme-toggle" onclick={toggleTheme} title="Toggle theme">
-			{theme === 'light' ? '\u263C' : '\u263E'}
-		</button>
+		<div class="header-actions">
+			{#if authReady}
+				{#if user}
+					<span class="username">{displayName()}</span>
+					<button class="header-btn" onclick={() => logout()}>Log out</button>
+				{:else}
+					<button class="header-btn" onclick={() => login()}>Log in</button>
+				{/if}
+			{/if}
+			<button class="theme-toggle" onclick={toggleTheme} title="Toggle theme">
+				{theme === 'light' ? '\u263C' : '\u263E'}
+			</button>
+		</div>
 	</header>
 	<main>
 		{@render children()}
@@ -60,6 +87,34 @@
 		text-decoration: none;
 		color: var(--text-primary);
 		letter-spacing: -0.02em;
+	}
+
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.username {
+		font-size: 13px;
+		color: var(--text-muted);
+	}
+
+	.header-btn {
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 4px 12px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all 0.1s;
+	}
+
+	.header-btn:hover {
+		background: var(--surface-hover);
+		color: var(--text-primary);
 	}
 
 	.theme-toggle {
